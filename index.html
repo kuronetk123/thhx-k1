@@ -72,8 +72,32 @@
     }
     #detail.open { opacity: 1; transform: none; pointer-events: auto; }
     #detail h2 { margin: 0 0 8px; font-size: 15px; font-weight: 620; }
+    #measure {
+      right: 18px; top: 236px; width: 300px;
+      padding: 14px 14px 10px; border: 1px solid var(--line); border-radius: 12px;
+      background: rgba(12, 28, 48, 0.94); backdrop-filter: blur(10px);
+    }
+    #measure[hidden] { display: none; }
+    #measure h2 { margin: 0 0 4px; font-size: 15px; font-weight: 620; }
+    #measure .hint { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
+    .measure-actions { display: flex; gap: 8px; margin-top: 8px; }
+    .measure-actions button {
+      flex: 1; cursor: pointer;
+      border: 1px solid rgba(230, 177, 90, 0.5); background: rgba(230, 177, 90, 0.14);
+      color: var(--amber); border-radius: 8px; padding: 8px 6px;
+    }
+    #dim-layer { position: fixed; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; }
+    .dim-label.segment { transform: translate(-50%, -50%); }
+    .dim-label {
+      position: absolute; transform: translate(-50%, -150%);
+      padding: 3px 7px; border-radius: 6px;
+      background: rgba(12, 28, 48, 0.94);
+      border: 1px solid rgba(230, 177, 90, 0.8);
+      color: #f7fbff; font-size: 12px; line-height: 1.35; text-align: center;
+      font-variant-numeric: tabular-nums; white-space: pre;
+    }
     .row { display: flex; gap: 12px; padding: 5px 0; border-top: 1px solid var(--line); }
-    .row b { width: 72px; flex: none; color: var(--muted); font-weight: 550; }
+    .row b { width: 84px; flex: none; color: var(--muted); font-weight: 550; }
     #only {
       margin-top: 8px; width: 100%; cursor: pointer;
       border: 1px solid rgba(230, 177, 90, 0.5); background: rgba(230, 177, 90, 0.14);
@@ -98,7 +122,9 @@
       button.nav, button.tool { width: auto; padding: 6px 8px; }
       #filters { top: auto; bottom: 148px; max-height: 34vh; width: min(280px, calc(100vw - 16px)); }
       footer { width: calc(100vw - 24px); }
-      #detail { left: 12px; right: 12px; width: auto; }
+      #detail, #measure { left: 12px; right: 12px; top: auto; width: auto; }
+      #detail { bottom: 210px; }
+      #measure { bottom: 210px; max-height: 32vh; overflow: auto; }
     }
   </style>
 </head>
@@ -117,6 +143,7 @@
   <nav id="tools" aria-label="Công cụ">
     <button class="tool" id="layers-toggle" type="button" aria-pressed="true">Lớp</button>
     <button class="tool" id="explode-toggle" type="button" aria-pressed="false">Tách tầng</button>
+    <button class="tool" id="measure-toggle" type="button" aria-pressed="false">Đo</button>
   </nav>
   <aside id="filters">
     <p class="hint">Gạt để hiện hoặc ẩn</p>
@@ -132,8 +159,18 @@
     <div id="rows"></div>
     <button id="only" type="button">Chỉ hiện cấu kiện này</button>
   </aside>
+  <aside id="measure" hidden>
+    <h2>Đo</h2>
+    <p id="measure-hint" class="hint">Bấm một điểm để lấy tọa độ và cao độ.</p>
+    <div id="measure-rows"></div>
+    <div class="measure-actions">
+      <button id="measure-break" type="button">Ngắt chuỗi</button>
+      <button id="measure-clear" type="button">Xóa kích thước</button>
+    </div>
+  </aside>
+  <div id="dim-layer"></div>
   <footer>
-    <p>Kéo để xoay · cuộn để phóng · bấm một cấu kiện</p>
+    <p id="hint">Kéo để xoay · cuộn để phóng · bấm một cấu kiện</p>
     <label>TÁCH
       <input id="explode" type="range" min="0" max="12" step="0.1" value="0" aria-label="Mức tách tầng">
     </label>
@@ -173,6 +210,8 @@
       cool: new THREE.Color(0.7, 0.9, 1.28),
     };
     const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const SURVEY_X = 550321.5;
+    const SURVEY_Y = 1771563.5;
 
     const status = document.getElementById("status");
     const rows = document.getElementById("rows");
@@ -336,6 +375,27 @@
       return new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 2 }).format(value) + " " + unit;
     }
 
+    function formatMeters(value) {
+      return new Intl.NumberFormat("vi-VN", { minimumFractionDigits: 3, maximumFractionDigits: 3 }).format(value) + " m";
+    }
+
+    function formatLength(value) {
+      const mm = new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0, useGrouping: false }).format(Math.round(Math.abs(value) * 1000));
+      const sign = value < 0 ? "−" : "";
+      return formatMeters(value) + " (" + sign + mm + " mm)";
+    }
+
+    function elementBox(key) {
+      const box = new THREE.Box3();
+      let any = false;
+      for (const item of items) {
+        if (item.key !== key) continue;
+        box.union(item.worldBox);
+        any = true;
+      }
+      return any ? box : null;
+    }
+
     function addRow(label, value) {
       if (!value) return;
       const row = document.createElement("div");
@@ -360,6 +420,14 @@
       addRow("Dày", format(info.width, "m"));
       addRow("Diện tích", format(info.area, "m²"));
       addRow("Thể tích", format(info.volume, "m³"));
+      const box = elementBox(guid);
+      if (box) {
+        const center = box.getCenter(new THREE.Vector3());
+        addRow("Tâm X", formatMeters(center.x + SURVEY_X));
+        addRow("Tâm Y", formatMeters(-center.z + SURVEY_Y));
+        addRow("Đáy Z", formatMeters(box.min.y));
+        addRow("Đỉnh Z", formatMeters(box.max.y));
+      }
       addRow("Mã Revit", info.revitId);
       detail.classList.add("open");
       onlyButton.textContent = isolatedGuid === guid ? "Hiện lại tất cả" : "Chỉ hiện cấu kiện này";
@@ -428,7 +496,7 @@
       for (const hit of hits) {
         if (hit.batchId == null || hit.batchId < 0) continue;
         const item = lookup.get(hit.object.uuid + ":" + hit.batchId);
-        if (item && item.visible) return item;
+        if (item && item.visible) return { item, point: hit.point.clone() };
       }
       return null;
     }
@@ -543,6 +611,13 @@
           batch.setColorAt(instanceId, TINT.base);
           const localBox = packed.boundingBox.clone().translate(mesh.position);
           const worldBox = localBox.clone().applyMatrix4(mesh.matrixWorld);
+          const srcPos = packed.getAttribute("position");
+          const positions = new Float32Array(srcPos.count * 3);
+          for (let index = 0; index < srcPos.count; index += 1) {
+            positions[index * 3] = srcPos.getX(index);
+            positions[index * 3 + 1] = srcPos.getY(index);
+            positions[index * 3 + 2] = srcPos.getZ(index);
+          }
           const item = {
             batch,
             instanceId,
@@ -553,6 +628,7 @@
             rank: storeyRank(info.storey),
             base: mesh.position.clone(),
             worldBox,
+            positions,
             visible: true,
             tint: "base",
           };
@@ -564,6 +640,340 @@
         batch.computeBoundingSphere();
       }
     }
+
+    const measurePanel = document.getElementById("measure");
+    const measureRows = document.getElementById("measure-rows");
+    const measureHint = document.getElementById("measure-hint");
+    const measureToggle = document.getElementById("measure-toggle");
+    const hint = document.getElementById("hint");
+    const dimLayer = document.getElementById("dim-layer");
+    const markerGeometry = new THREE.SphereGeometry(1, 14, 10);
+    const barGeometry = new THREE.CylinderGeometry(1, 1, 1, 7);
+    const barUp = new THREE.Vector3(0, 1, 0);
+    const barDirection = new THREE.Vector3();
+    const snapLocal = new THREE.Vector3();
+    const snapWorld = new THREE.Vector3();
+    const snapNdc = new THREE.Vector3();
+    const instanceMatrix = new THREE.Matrix4();
+    const fullMatrix = new THREE.Matrix4();
+    const inverseMatrix = new THREE.Matrix4();
+    let measuring = false;
+    let breakChain = false;
+    let previewSample = null;
+    let panelKey = "";
+    const chain = [];
+    const spots = [];
+    const dims = [];
+    const previewMarker = makeMarker(true);
+    previewMarker.visible = false;
+    const previewLine = makeBar(0.55);
+    previewLine.visible = false;
+
+    function makeMarker(snapped) {
+      const material = new THREE.MeshBasicMaterial({
+        color: snapped ? 0xffc857 : 0xd7e7f6,
+        depthTest: false,
+        depthWrite: false,
+        toneMapped: false,
+      });
+      const mesh = new THREE.Mesh(markerGeometry, material);
+      mesh.renderOrder = 12;
+      mesh.frustumCulled = false;
+      mesh.visible = false;
+      scene.add(mesh);
+      return mesh;
+    }
+
+    function makeBar(opacity) {
+      const group = new THREE.Group();
+      const outline = new THREE.Mesh(barGeometry, new THREE.MeshBasicMaterial({
+        color: 0x071422,
+        depthTest: false,
+        depthWrite: false,
+        toneMapped: false,
+        transparent: opacity < 1,
+        opacity,
+      }));
+      const core = new THREE.Mesh(barGeometry, new THREE.MeshBasicMaterial({
+        color: 0xffc857,
+        depthTest: false,
+        depthWrite: false,
+        toneMapped: false,
+        transparent: opacity < 1,
+        opacity,
+      }));
+      outline.renderOrder = 11;
+      core.renderOrder = 12;
+      outline.frustumCulled = false;
+      core.frustumCulled = false;
+      group.add(outline, core);
+      group.frustumCulled = false;
+      group.visible = false;
+      scene.add(group);
+      return group;
+    }
+
+    function makeLabel() {
+      const label = document.createElement("div");
+      label.className = "dim-label";
+      label.style.display = "none";
+      dimLayer.append(label);
+      return label;
+    }
+
+    function fitMarker(mesh, world) {
+      const distance = Math.max(camera.position.distanceTo(world), 0.4);
+      mesh.position.copy(world);
+      mesh.scale.setScalar(distance * 0.0042);
+      mesh.visible = true;
+    }
+
+    function placeLabel(label, world, text) {
+      label.textContent = text;
+      const ndc = world.clone().project(camera);
+      if (ndc.z < -1 || ndc.z > 1) {
+        label.style.display = "none";
+        return;
+      }
+      label.style.display = "block";
+      label.style.left = ((ndc.x * 0.5 + 0.5) * innerWidth) + "px";
+      label.style.top = ((-ndc.y * 0.5 + 0.5) * innerHeight) + "px";
+    }
+
+    function setBar(mesh, from, to) {
+      barDirection.subVectors(to, from);
+      const length = barDirection.length();
+      if (length < 0.001) {
+        mesh.visible = false;
+        return;
+      }
+      const distance = Math.max(camera.position.distanceTo(from), 0.5);
+      const worldPerPixel = 2 * Math.tan((camera.fov * Math.PI) / 360) * distance / innerHeight;
+      const thickness = worldPerPixel * 5;
+      const direction = barDirection.multiplyScalar(1 / length);
+      mesh.position.copy(from).lerp(to, 0.5);
+      mesh.quaternion.setFromUnitVectors(barUp, direction);
+      mesh.children[0].scale.set(thickness * 2.1, length, thickness * 2.1);
+      mesh.children[1].scale.set(thickness, length, thickness);
+      mesh.visible = true;
+    }
+
+    function realLocalToWorld(local, rank, target) {
+      target.copy(local);
+      target.z += rank * gap;
+      return building.localToWorld(target);
+    }
+
+    function sampleFromWorld(worldPoint, item) {
+      const local = building.worldToLocal(worldPoint.clone());
+      local.z -= item.rank * gap;
+      return {
+        local,
+        rank: item.rank,
+        survey: {
+          x: local.x + SURVEY_X,
+          y: local.y + SURVEY_Y,
+          z: local.z,
+        },
+      };
+    }
+
+    function snapWorldPoint(hitPoint, item, clientX, clientY) {
+      const positions = item.positions;
+      const rect = renderer.domElement.getBoundingClientRect();
+      const cursorX = clientX - rect.left;
+      const cursorY = clientY - rect.top;
+      item.batch.getMatrixAt(item.instanceId, instanceMatrix);
+      building.updateMatrixWorld(true);
+      fullMatrix.multiplyMatrices(building.matrixWorld, instanceMatrix);
+      inverseMatrix.copy(fullMatrix).invert();
+      snapLocal.copy(hitPoint).applyMatrix4(inverseMatrix);
+      let best = null;
+      let bestPixels = 20 * 20;
+      for (let index = 0; index < positions.length; index += 3) {
+        const dx = positions[index] - snapLocal.x;
+        const dy = positions[index + 1] - snapLocal.y;
+        const dz = positions[index + 2] - snapLocal.z;
+        if (dx * dx + dy * dy + dz * dz > 2.25) continue;
+        snapWorld.set(positions[index], positions[index + 1], positions[index + 2]).applyMatrix4(fullMatrix);
+        snapNdc.copy(snapWorld).project(camera);
+        if (snapNdc.z < -1 || snapNdc.z > 1) continue;
+        const sx = (snapNdc.x * 0.5 + 0.5) * rect.width;
+        const sy = (-snapNdc.y * 0.5 + 0.5) * rect.height;
+        const pixels = (sx - cursorX) * (sx - cursorX) + (sy - cursorY) * (sy - cursorY);
+        if (pixels < bestPixels) {
+          bestPixels = pixels;
+          best = snapWorld.clone();
+        }
+      }
+      return best ? { point: best, snapped: true } : { point: hitPoint.clone(), snapped: false };
+    }
+
+    function segmentNumbers(a, b) {
+      const dx = b.survey.x - a.survey.x;
+      const dy = b.survey.y - a.survey.y;
+      const dz = b.survey.z - a.survey.z;
+      const plan = Math.hypot(dx, dy);
+      const space = Math.hypot(plan, dz);
+      return { dx, dy, dz, plan, space };
+    }
+
+    function segmentLabel(a, b) {
+      const numbers = segmentNumbers(a, b);
+      if (Math.abs(numbers.space - numbers.plan) > 0.005) {
+        return formatMeters(numbers.space) + "\nbằng " + formatMeters(numbers.plan) + "\ncao " + formatMeters(Math.abs(numbers.dz));
+      }
+      return formatMeters(numbers.space);
+    }
+
+    function addMeasureRow(label, value) {
+      const row = document.createElement("div");
+      row.className = "row";
+      const name = document.createElement("b");
+      name.textContent = label;
+      row.append(name, document.createTextNode(value));
+      measureRows.append(row);
+    }
+
+    function fillMeasurePanel() {
+      const last = !breakChain && chain.length ? chain[chain.length - 1] : null;
+      const latest = dims.length ? dims[dims.length - 1] : null;
+      const numbers = latest ? segmentNumbers(latest.a, latest.b) : null;
+      const key = JSON.stringify({
+        preview: previewSample && [previewSample.survey.x, previewSample.survey.y, previewSample.survey.z].map((value) => Math.round(value * 1000)),
+        last: last && [last.survey.x, last.survey.y, last.survey.z].map((value) => Math.round(value * 1000)),
+        numbers: numbers && [numbers.dx, numbers.dy, numbers.dz, numbers.plan, numbers.space].map((value) => Math.round(value * 1000)),
+        count: dims.length,
+        breakChain,
+      });
+      if (key === panelKey) return;
+      panelKey = key;
+      measureRows.replaceChildren();
+      if (!previewSample && !last && !latest) {
+        measureHint.textContent = "Bấm một điểm để lấy tọa độ và cao độ.";
+        return;
+      }
+      if (previewSample) {
+        addMeasureRow("Trỏ X", formatMeters(previewSample.survey.x));
+        addMeasureRow("Trỏ Y", formatMeters(previewSample.survey.y));
+        addMeasureRow("Trỏ Z", formatMeters(previewSample.survey.z));
+      }
+      if (last) {
+        addMeasureRow("Điểm X", formatMeters(last.survey.x));
+        addMeasureRow("Điểm Y", formatMeters(last.survey.y));
+        addMeasureRow("Điểm Z", formatMeters(last.survey.z));
+      }
+      if (numbers) {
+        addMeasureRow("Dài", formatLength(numbers.space));
+        addMeasureRow("Mặt bằng", formatLength(numbers.plan));
+        addMeasureRow("ΔX", formatLength(numbers.dx));
+        addMeasureRow("ΔY", formatLength(numbers.dy));
+        addMeasureRow("Δ cao", formatLength(numbers.dz));
+      }
+      measureHint.textContent = latest
+        ? "Bấm tiếp để đo chuỗi. Chuột phải để ngắt."
+        : last
+          ? "Bấm điểm thứ hai để đo dài và chênh cao."
+          : "Bấm một điểm để lấy tọa độ và cao độ.";
+    }
+
+    function updateMeasureGraphics() {
+      const worldA = new THREE.Vector3();
+      const worldB = new THREE.Vector3();
+      for (const spot of spots) {
+        realLocalToWorld(spot.sample.local, spot.sample.rank, worldA);
+        fitMarker(spot.marker, worldA);
+        placeLabel(spot.label, worldA, "Z " + formatMeters(spot.sample.survey.z));
+      }
+      for (const dim of dims) {
+        realLocalToWorld(dim.a.local, dim.a.rank, worldA);
+        realLocalToWorld(dim.b.local, dim.b.rank, worldB);
+        setBar(dim.line, worldA, worldB);
+        placeLabel(dim.label, worldA.clone().lerp(worldB, 0.5), segmentLabel(dim.a, dim.b));
+      }
+      if (measuring && previewSample) {
+        realLocalToWorld(previewSample.local, previewSample.rank, worldA);
+        fitMarker(previewMarker, worldA);
+        const anchor = !breakChain && chain.length ? chain[chain.length - 1] : null;
+        if (anchor) {
+          realLocalToWorld(anchor.local, anchor.rank, worldB);
+          setBar(previewLine, worldB, worldA);
+        } else {
+          previewLine.visible = false;
+        }
+      } else {
+        previewMarker.visible = false;
+        previewLine.visible = false;
+      }
+    }
+
+    function placeMeasure(sample, snapped) {
+      if (breakChain) {
+        chain.length = 0;
+        breakChain = false;
+      }
+      chain.push(sample);
+      spots.push({ sample, marker: makeMarker(snapped), label: makeLabel() });
+      if (chain.length >= 2) {
+        dims.push({
+          a: chain[chain.length - 2],
+          b: chain[chain.length - 1],
+          line: makeBar(1),
+          label: Object.assign(makeLabel(), { className: "dim-label segment" }),
+        });
+      }
+      panelKey = "";
+      updateMeasureGraphics();
+      fillMeasurePanel();
+    }
+
+    function clearMeasures() {
+      for (const spot of spots) {
+        scene.remove(spot.marker);
+        spot.label.remove();
+      }
+      for (const dim of dims) {
+        scene.remove(dim.line);
+        dim.label.remove();
+      }
+      spots.length = 0;
+      dims.length = 0;
+      chain.length = 0;
+      breakChain = false;
+      panelKey = "";
+      updateMeasureGraphics();
+      fillMeasurePanel();
+    }
+
+    measureToggle.addEventListener("click", () => {
+      measuring = !measuring;
+      measureToggle.setAttribute("aria-pressed", measuring ? "true" : "false");
+      measurePanel.hidden = !measuring;
+      hint.textContent = measuring
+        ? "Đo: bấm điểm đầu, rồi điểm cuối. Góc cấu kiện được hút."
+        : "Kéo để xoay · cuộn để phóng · bấm một cấu kiện";
+      renderer.domElement.style.cursor = measuring ? "crosshair" : "";
+      if (!measuring) {
+        previewSample = null;
+        hoverGuid = null;
+        applyTint();
+      }
+      panelKey = "";
+      fillMeasurePanel();
+    });
+    document.getElementById("measure-break").addEventListener("click", () => {
+      breakChain = true;
+      panelKey = "";
+      fillMeasurePanel();
+    });
+    document.getElementById("measure-clear").addEventListener("click", clearMeasures);
+    renderer.domElement.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      if (!measuring) return;
+      breakChain = true;
+      panelKey = "";
+      fillMeasurePanel();
+    });
 
     let pointerDown = null;
     renderer.domElement.addEventListener("pointerdown", (event) => {
@@ -577,15 +987,21 @@
       const moved = Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y);
       pointerDown = null;
       if (moved > 5) return;
-      const item = raycast(event);
-      if (!item) {
+      const hit = raycast(event);
+      if (measuring) {
+        if (!hit) return;
+        const snapped = snapWorldPoint(hit.point, hit.item, event.clientX, event.clientY);
+        placeMeasure(sampleFromWorld(snapped.point, hit.item), snapped.snapped);
+        return;
+      }
+      if (!hit) {
         clearSelection();
         applyTint();
         return;
       }
-      selectedGuid = item.key;
+      selectedGuid = hit.item.key;
       hoverGuid = null;
-      showDetail(item.key);
+      showDetail(hit.item.key);
       applyTint();
     });
     let hoverEvent = null;
@@ -598,8 +1014,20 @@
       requestAnimationFrame(() => {
         hoverQueued = false;
         if (!hoverEvent || dragging) return;
-        const item = raycast(hoverEvent);
-        const next = item ? item.key : null;
+        if (measuring) {
+          const hit = raycast(hoverEvent);
+          previewSample = null;
+          if (hit) {
+            const snapped = snapWorldPoint(hit.point, hit.item, hoverEvent.clientX, hoverEvent.clientY);
+            previewSample = sampleFromWorld(snapped.point, hit.item);
+            previewMarker.material.color.setHex(snapped.snapped ? 0xe6b15a : 0xd7e7f6);
+          }
+          renderer.domElement.style.cursor = "crosshair";
+          fillMeasurePanel();
+          return;
+        }
+        const hit = raycast(hoverEvent);
+        const next = hit ? hit.item.key : null;
         if (next === hoverGuid) return;
         hoverGuid = next;
         renderer.domElement.style.cursor = next ? "pointer" : "";
@@ -639,6 +1067,16 @@
     });
     addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
+        if (measuring && chain.length && !breakChain) {
+          breakChain = true;
+          panelKey = "";
+          fillMeasurePanel();
+          return;
+        }
+        if (measuring) {
+          measureToggle.click();
+          return;
+        }
         clearSelection();
         applyTint();
       }
@@ -714,6 +1152,7 @@
       } else {
         controls.update();
       }
+      updateMeasureGraphics();
       renderer.render(scene, camera);
     });
   </script>
