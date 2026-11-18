@@ -87,14 +87,12 @@
       color: var(--amber); border-radius: 8px; padding: 8px 6px;
     }
     #dim-layer { position: fixed; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; }
-    .dim-label.segment { transform: translate(-50%, -50%); }
     .dim-label {
-      position: absolute; transform: translate(-50%, -150%);
-      padding: 3px 7px; border-radius: 6px;
-      background: rgba(12, 28, 48, 0.94);
-      border: 1px solid rgba(230, 177, 90, 0.8);
-      color: #f7fbff; font-size: 12px; line-height: 1.35; text-align: center;
-      font-variant-numeric: tabular-nums; white-space: pre;
+      position: absolute; transform: translate(-50%, -50%);
+      padding: 0 4px; border-radius: 1px;
+      background: #102033; border: 0;
+      color: #f7fbff; font-size: 13px; font-weight: 650; line-height: 1.35;
+      letter-spacing: 0.01em; font-variant-numeric: tabular-nums; white-space: nowrap;
     }
     .row { display: flex; gap: 12px; padding: 5px 0; border-top: 1px solid var(--line); }
     .row b { width: 84px; flex: none; color: var(--muted); font-weight: 550; }
@@ -161,7 +159,7 @@
   </aside>
   <aside id="measure" hidden>
     <h2>Đo</h2>
-    <p id="measure-hint" class="hint">Bấm một điểm để lấy tọa độ và cao độ.</p>
+    <p id="measure-hint" class="hint">Bấm hai điểm. Dim nằm ngoài mô hình, có đường gióng.</p>
     <div id="measure-rows"></div>
     <div class="measure-actions">
       <button id="measure-break" type="button">Ngắt chuỗi</button>
@@ -666,8 +664,7 @@
     const dims = [];
     const previewMarker = makeMarker(true);
     previewMarker.visible = false;
-    const previewLine = makeBar(0.55);
-    previewLine.visible = false;
+    const previewDim = makeDimension();
 
     function makeMarker(snapped) {
       const material = new THREE.MeshBasicMaterial({
@@ -695,7 +692,7 @@
         opacity,
       }));
       const core = new THREE.Mesh(barGeometry, new THREE.MeshBasicMaterial({
-        color: 0xffc857,
+        color: 0xf5f8fb,
         depthTest: false,
         depthWrite: false,
         toneMapped: false,
@@ -724,8 +721,26 @@
     function fitMarker(mesh, world) {
       const distance = Math.max(camera.position.distanceTo(world), 0.4);
       mesh.position.copy(world);
-      mesh.scale.setScalar(distance * 0.0042);
+      mesh.scale.setScalar(pixelsAt(distance, 3.2));
       mesh.visible = true;
+    }
+
+    function pixelsAt(distance, count) {
+      return 2 * Math.tan((camera.fov * Math.PI) / 360) * distance / innerHeight * count;
+    }
+
+    function makeDimension() {
+      return {
+        strokes: Array.from({ length: 10 }, () => makeBar(1)),
+        lengthLabel: makeLabel(),
+        heightLabel: makeLabel(),
+      };
+    }
+
+    function hideDimension(dim) {
+      for (const stroke of dim.strokes) stroke.visible = false;
+      dim.lengthLabel.style.display = "none";
+      dim.heightLabel.style.display = "none";
     }
 
     function placeLabel(label, world, text) {
@@ -740,7 +755,7 @@
       label.style.top = ((-ndc.y * 0.5 + 0.5) * innerHeight) + "px";
     }
 
-    function setBar(mesh, from, to) {
+    function setBar(mesh, from, to, weight) {
       barDirection.subVectors(to, from);
       const length = barDirection.length();
       if (length < 0.001) {
@@ -749,7 +764,7 @@
       }
       const distance = Math.max(camera.position.distanceTo(from), 0.5);
       const worldPerPixel = 2 * Math.tan((camera.fov * Math.PI) / 360) * distance / innerHeight;
-      const thickness = worldPerPixel * 5;
+      const thickness = worldPerPixel * (weight || 2.2);
       const direction = barDirection.multiplyScalar(1 / length);
       mesh.position.copy(from).lerp(to, 0.5);
       mesh.quaternion.setFromUnitVectors(barUp, direction);
@@ -818,12 +833,107 @@
       return { dx, dy, dz, plan, space };
     }
 
-    function segmentLabel(a, b) {
-      const numbers = segmentNumbers(a, b);
-      if (Math.abs(numbers.space - numbers.plan) > 0.005) {
-        return formatMeters(numbers.space) + "\nbằng " + formatMeters(numbers.plan) + "\ncao " + formatMeters(Math.abs(numbers.dz));
+    function screenSide(direction, origin, prefer) {
+      const viewDir = camera.getWorldDirection(new THREE.Vector3());
+      const side = new THREE.Vector3().crossVectors(direction, viewDir);
+      if (side.lengthSq() < 1e-8) side.crossVectors(direction, new THREE.Vector3(0, 1, 0));
+      if (side.lengthSq() < 1e-8) side.set(1, 0, 0);
+      side.normalize();
+      const originNdc = origin.clone().project(camera);
+      const aheadNdc = origin.clone().add(side).project(camera);
+      const upward = aheadNdc.y - originNdc.y;
+      const rightward = aheadNdc.x - originNdc.x;
+      if (prefer === "up" && upward < 0) side.negate();
+      if (prefer === "right" && rightward < 0) side.negate();
+      return side;
+    }
+
+    function layoutAligned(from, to) {
+      const direction = to.clone().sub(from);
+      const length = direction.length();
+      if (length < 0.001) return null;
+      direction.multiplyScalar(1 / length);
+      const mid = from.clone().lerp(to, 0.5);
+      const distance = Math.max(camera.position.distanceTo(mid), 0.5);
+      const side = screenSide(direction, mid, "up");
+      const gap = pixelsAt(distance, 8);
+      const offset = pixelsAt(distance, 36);
+      const overrun = pixelsAt(distance, 10);
+      const tick = pixelsAt(distance, 12);
+      const dimFrom = from.clone().addScaledVector(side, offset);
+      const dimTo = to.clone().addScaledVector(side, offset);
+      const tickDir = direction.clone().add(side).normalize();
+      return {
+        segments: [
+          [from.clone().addScaledVector(side, gap), from.clone().addScaledVector(side, offset + overrun), 1.7],
+          [to.clone().addScaledVector(side, gap), to.clone().addScaledVector(side, offset + overrun), 1.7],
+          [dimFrom, dimTo, 2.2],
+          [dimFrom.clone().addScaledVector(tickDir, -tick), dimFrom.clone().addScaledVector(tickDir, tick), 4.4],
+          [dimTo.clone().addScaledVector(tickDir, -tick), dimTo.clone().addScaledVector(tickDir, tick), 4.4],
+        ],
+        textAt: dimFrom.clone().lerp(dimTo, 0.5).addScaledVector(side, pixelsAt(distance, 13)),
+      };
+    }
+
+    function layoutHeight(from, to) {
+      const rise = Math.abs(to.y - from.y);
+      const plan = Math.hypot(to.x - from.x, to.z - from.z);
+      if (rise < 0.05 || plan < 0.05) return null;
+      const mid = from.clone().lerp(to, 0.5);
+      const distance = Math.max(camera.position.distanceTo(mid), 0.5);
+      const side = screenSide(new THREE.Vector3(0, 1, 0), mid, "right");
+      const gap = pixelsAt(distance, 8);
+      const offset = pixelsAt(distance, 48);
+      const overrun = pixelsAt(distance, 10);
+      const tick = pixelsAt(distance, 12);
+      const y0 = Math.min(from.y, to.y);
+      const y1 = Math.max(from.y, to.y);
+      const dimBottom = new THREE.Vector3(mid.x, y0, mid.z).addScaledVector(side, offset);
+      const dimTop = new THREE.Vector3(mid.x, y1, mid.z).addScaledVector(side, offset);
+      const low = from.y <= to.y ? from : to;
+      const high = from.y <= to.y ? to : from;
+      const witness = (point, end) => {
+        const span = end.clone().sub(point);
+        const spanLength = span.length();
+        if (spanLength < gap + pixelsAt(distance, 4)) return [point.clone(), end.clone()];
+        span.multiplyScalar(1 / spanLength);
+        return [point.clone().addScaledVector(span, gap), end.clone().addScaledVector(span, overrun)];
+      };
+      const lowWitness = witness(low, dimBottom);
+      const highWitness = witness(high, dimTop);
+      const tickDir = side.clone().add(new THREE.Vector3(0, 1, 0)).normalize();
+      return {
+        segments: [
+          [...lowWitness, 1.7],
+          [...highWitness, 1.7],
+          [dimBottom, dimTop, 2.2],
+          [dimBottom.clone().addScaledVector(tickDir, -tick), dimBottom.clone().addScaledVector(tickDir, tick), 4.4],
+          [dimTop.clone().addScaledVector(tickDir, -tick), dimTop.clone().addScaledVector(tickDir, tick), 4.4],
+        ],
+        textAt: dimBottom.clone().lerp(dimTop, 0.5).addScaledVector(side, pixelsAt(distance, 14)),
+      };
+    }
+
+    function paintDimension(dim, from, to) {
+      const aligned = layoutAligned(from, to);
+      if (!aligned) {
+        hideDimension(dim);
+        return;
       }
-      return formatMeters(numbers.space);
+      const height = layoutHeight(from, to);
+      const segments = aligned.segments.concat(height ? height.segments : []);
+      dim.strokes.forEach((stroke, index) => {
+        const segment = segments[index];
+        if (!segment) {
+          stroke.visible = false;
+          return;
+        }
+        setBar(stroke, segment[0], segment[1], segment[2]);
+      });
+      const length = from.distanceTo(to);
+      placeLabel(dim.lengthLabel, aligned.textAt, formatMeters(length));
+      if (height) placeLabel(dim.heightLabel, height.textAt, formatMeters(Math.abs(to.y - from.y)));
+      else dim.heightLabel.style.display = "none";
     }
 
     function addMeasureRow(label, value) {
@@ -850,46 +960,53 @@
       panelKey = key;
       measureRows.replaceChildren();
       if (!previewSample && !last && !latest) {
-        measureHint.textContent = "Bấm một điểm để lấy tọa độ và cao độ.";
+        measureHint.textContent = "Bấm hai điểm. Dim nằm ngoài mô hình, có đường gióng.";
         return;
       }
-      if (previewSample) {
-        addMeasureRow("Trỏ X", formatMeters(previewSample.survey.x));
-        addMeasureRow("Trỏ Y", formatMeters(previewSample.survey.y));
-        addMeasureRow("Trỏ Z", formatMeters(previewSample.survey.z));
-      }
-      if (last) {
-        addMeasureRow("Điểm X", formatMeters(last.survey.x));
-        addMeasureRow("Điểm Y", formatMeters(last.survey.y));
-        addMeasureRow("Điểm Z", formatMeters(last.survey.z));
+      const shown = previewSample || last;
+      if (shown) {
+        addMeasureRow("X", formatMeters(shown.survey.x));
+        addMeasureRow("Y", formatMeters(shown.survey.y));
+        addMeasureRow("Z", formatMeters(shown.survey.z));
       }
       if (numbers) {
         addMeasureRow("Dài", formatLength(numbers.space));
         addMeasureRow("Mặt bằng", formatLength(numbers.plan));
         addMeasureRow("ΔX", formatLength(numbers.dx));
         addMeasureRow("ΔY", formatLength(numbers.dy));
-        addMeasureRow("Δ cao", formatLength(numbers.dz));
+        addMeasureRow("Cao", formatLength(numbers.dz));
       }
       measureHint.textContent = latest
-        ? "Bấm tiếp để đo chuỗi. Chuột phải để ngắt."
+        ? "Bấm tiếp để nối chuỗi. Chuột phải để ngắt."
         : last
-          ? "Bấm điểm thứ hai để đo dài và chênh cao."
-          : "Bấm một điểm để lấy tọa độ và cao độ.";
+          ? "Bấm điểm cuối. Đường kích thước sẽ đẩy ra phía nhìn."
+          : "Bấm hai điểm. Dim nằm ngoài mô hình, có đường gióng.";
     }
 
     function updateMeasureGraphics() {
       const worldA = new THREE.Vector3();
       const worldB = new THREE.Vector3();
+      const shoulder = new THREE.Vector3();
+      const showSpot = !breakChain && chain.length === 1 && !(measuring && previewSample);
       for (const spot of spots) {
         realLocalToWorld(spot.sample.local, spot.sample.rank, worldA);
         fitMarker(spot.marker, worldA);
-        placeLabel(spot.label, worldA, "Z " + formatMeters(spot.sample.survey.z));
+        const lone = showSpot && spot.sample === chain[0];
+        if (!lone) {
+          spot.leader.visible = false;
+          spot.label.style.display = "none";
+          continue;
+        }
+        shoulder.set(1, 0, 0).applyQuaternion(camera.quaternion);
+        const reach = pixelsAt(Math.max(camera.position.distanceTo(worldA), 0.4), 26);
+        shoulder.multiplyScalar(reach);
+        setBar(spot.leader, worldA, worldB.copy(worldA).add(shoulder), 1.6);
+        placeLabel(spot.label, worldB, formatMeters(spot.sample.survey.z));
       }
       for (const dim of dims) {
         realLocalToWorld(dim.a.local, dim.a.rank, worldA);
         realLocalToWorld(dim.b.local, dim.b.rank, worldB);
-        setBar(dim.line, worldA, worldB);
-        placeLabel(dim.label, worldA.clone().lerp(worldB, 0.5), segmentLabel(dim.a, dim.b));
+        paintDimension(dim.graphic, worldA, worldB);
       }
       if (measuring && previewSample) {
         realLocalToWorld(previewSample.local, previewSample.rank, worldA);
@@ -897,13 +1014,13 @@
         const anchor = !breakChain && chain.length ? chain[chain.length - 1] : null;
         if (anchor) {
           realLocalToWorld(anchor.local, anchor.rank, worldB);
-          setBar(previewLine, worldB, worldA);
+          paintDimension(previewDim, worldB, worldA);
         } else {
-          previewLine.visible = false;
+          hideDimension(previewDim);
         }
       } else {
         previewMarker.visible = false;
-        previewLine.visible = false;
+        hideDimension(previewDim);
       }
     }
 
@@ -913,13 +1030,12 @@
         breakChain = false;
       }
       chain.push(sample);
-      spots.push({ sample, marker: makeMarker(snapped), label: makeLabel() });
+      spots.push({ sample, marker: makeMarker(snapped), label: makeLabel(), leader: makeBar(1) });
       if (chain.length >= 2) {
         dims.push({
           a: chain[chain.length - 2],
           b: chain[chain.length - 1],
-          line: makeBar(1),
-          label: Object.assign(makeLabel(), { className: "dim-label segment" }),
+          graphic: makeDimension(),
         });
       }
       panelKey = "";
@@ -930,11 +1046,13 @@
     function clearMeasures() {
       for (const spot of spots) {
         scene.remove(spot.marker);
+        scene.remove(spot.leader);
         spot.label.remove();
       }
       for (const dim of dims) {
-        scene.remove(dim.line);
-        dim.label.remove();
+        for (const stroke of dim.graphic.strokes) scene.remove(stroke);
+        dim.graphic.lengthLabel.remove();
+        dim.graphic.heightLabel.remove();
       }
       spots.length = 0;
       dims.length = 0;
@@ -950,7 +1068,7 @@
       measureToggle.setAttribute("aria-pressed", measuring ? "true" : "false");
       measurePanel.hidden = !measuring;
       hint.textContent = measuring
-        ? "Đo: bấm điểm đầu, rồi điểm cuối. Góc cấu kiện được hút."
+        ? "Đo: bấm hai điểm. Dim có đường gióng và vạch chéo, đẩy ra phía nhìn."
         : "Kéo để xoay · cuộn để phóng · bấm một cấu kiện";
       renderer.domElement.style.cursor = measuring ? "crosshair" : "";
       if (!measuring) {
