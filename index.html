@@ -94,6 +94,22 @@
       color: #f7fbff; font-size: 13px; font-weight: 650; line-height: 1.35;
       letter-spacing: 0.01em; font-variant-numeric: tabular-nums; white-space: nowrap;
     }
+    #snap {
+      position: fixed; z-index: 4; width: 34px; height: 34px; margin: -17px 0 0 -17px;
+      pointer-events: none;
+    }
+    #snap[hidden] { display: none; }
+    #snap::before, #snap::after {
+      content: ""; position: absolute; background: #9fb4c6;
+    }
+    #snap::before { left: 15px; top: 0; width: 4px; height: 34px; }
+    #snap::after { top: 15px; left: 0; height: 4px; width: 34px; }
+    #snap.locked::before, #snap.locked::after { background: #ffc857; }
+    #snap b {
+      position: absolute; left: 40px; top: 4px;
+      background: #102033; color: #f7fbff; padding: 2px 7px; border-radius: 2px;
+      font-size: 13px; font-weight: 650; white-space: nowrap;
+    }
     .row { display: flex; gap: 12px; padding: 5px 0; border-top: 1px solid var(--line); }
     .row b { width: 84px; flex: none; color: var(--muted); font-weight: 550; }
     #only {
@@ -159,7 +175,7 @@
   </aside>
   <aside id="measure" hidden>
     <h2>Đo</h2>
-    <p id="measure-hint" class="hint">Bấm hai điểm. Dim nằm ngoài mô hình, có đường gióng.</p>
+    <p id="measure-hint" class="hint">Đưa dấu cộng vàng vào góc, bấm để chốt. Chuột phải để xoay.</p>
     <div id="measure-rows"></div>
     <div class="measure-actions">
       <button id="measure-break" type="button">Ngắt chuỗi</button>
@@ -167,6 +183,7 @@
     </div>
   </aside>
   <div id="dim-layer"></div>
+  <div id="snap" hidden><b id="snap-text"></b></div>
   <footer>
     <p id="hint">Kéo để xoay · cuộn để phóng · bấm một cấu kiện</p>
     <label>TÁCH
@@ -243,6 +260,7 @@
     controls.dampingFactor = 0.08;
     controls.rotateSpeed = 0.72;
     controls.zoomSpeed = 0.85;
+    controls.zoomToCursor = true;
 
     const grid = new THREE.Mesh(
       new THREE.PlaneGeometry(520, 520),
@@ -642,6 +660,8 @@
     const measurePanel = document.getElementById("measure");
     const measureRows = document.getElementById("measure-rows");
     const measureHint = document.getElementById("measure-hint");
+    const snapEl = document.getElementById("snap");
+    const snapText = document.getElementById("snap-text");
     const measureToggle = document.getElementById("measure-toggle");
     const hint = document.getElementById("hint");
     const dimLayer = document.getElementById("dim-layer");
@@ -658,6 +678,7 @@
     let measuring = false;
     let breakChain = false;
     let previewSample = null;
+    let snapLocked = false;
     let panelKey = "";
     const chain = [];
     const spots = [];
@@ -803,14 +824,18 @@
       fullMatrix.multiplyMatrices(building.matrixWorld, instanceMatrix);
       inverseMatrix.copy(fullMatrix).invert();
       snapLocal.copy(hitPoint).applyMatrix4(inverseMatrix);
+      const hitDistance = Math.max(camera.position.distanceTo(hitPoint), 0.4);
+      const reach = pixelsAt(hitDistance, 110);
+      const reachSq = reach * reach;
       let best = null;
-      let bestPixels = 20 * 20;
+      let bestPixels = 72 * 72;
       for (let index = 0; index < positions.length; index += 3) {
         const dx = positions[index] - snapLocal.x;
         const dy = positions[index + 1] - snapLocal.y;
         const dz = positions[index + 2] - snapLocal.z;
-        if (dx * dx + dy * dy + dz * dz > 2.25) continue;
+        if (dx * dx + dy * dy + dz * dz > reachSq) continue;
         snapWorld.set(positions[index], positions[index + 1], positions[index + 2]).applyMatrix4(fullMatrix);
+        if (Math.abs(snapWorld.distanceTo(camera.position) - hitDistance) > reach) continue;
         snapNdc.copy(snapWorld).project(camera);
         if (snapNdc.z < -1 || snapNdc.z > 1) continue;
         const sx = (snapNdc.x * 0.5 + 0.5) * rect.width;
@@ -960,7 +985,7 @@
       panelKey = key;
       measureRows.replaceChildren();
       if (!previewSample && !last && !latest) {
-        measureHint.textContent = "Bấm hai điểm. Dim nằm ngoài mô hình, có đường gióng.";
+        measureHint.textContent = "Đưa dấu cộng vàng vào góc, rồi bấm để chốt.";
         return;
       }
       const shown = previewSample || last;
@@ -977,10 +1002,10 @@
         addMeasureRow("Cao", formatLength(numbers.dz));
       }
       measureHint.textContent = latest
-        ? "Bấm tiếp để nối chuỗi. Chuột phải để ngắt."
+        ? "Bấm tiếp để nối chuỗi. Esc để ngắt."
         : last
-          ? "Bấm điểm cuối. Đường kích thước sẽ đẩy ra phía nhìn."
-          : "Bấm hai điểm. Dim nằm ngoài mô hình, có đường gióng.";
+          ? "Đưa dấu cộng tới góc kia, rồi bấm."
+          : "Đưa dấu cộng vàng vào góc, rồi bấm để chốt.";
     }
 
     function updateMeasureGraphics() {
@@ -1021,6 +1046,28 @@
       } else {
         previewMarker.visible = false;
         hideDimension(previewDim);
+      }
+      if (!measuring || !previewSample) {
+        snapEl.hidden = true;
+      } else {
+        realLocalToWorld(previewSample.local, previewSample.rank, worldA);
+        const ndc = worldA.clone().project(camera);
+        if (ndc.z < -1 || ndc.z > 1) {
+          snapEl.hidden = true;
+        } else {
+          snapEl.hidden = false;
+          snapEl.style.left = ((ndc.x * 0.5 + 0.5) * innerWidth) + "px";
+          snapEl.style.top = ((-ndc.y * 0.5 + 0.5) * innerHeight) + "px";
+          snapEl.classList.toggle("locked", snapLocked);
+          const anchor = !breakChain && chain.length ? chain[chain.length - 1] : null;
+          if (anchor) {
+            realLocalToWorld(anchor.local, anchor.rank, worldB);
+            const length = worldA.distanceTo(worldB);
+            snapText.textContent = length < 0.002 ? (snapLocked ? "Góc" : "Mặt") : (snapLocked ? "Góc · " : "") + formatMeters(length);
+          } else {
+            snapText.textContent = snapLocked ? "Góc" : "Mặt";
+          }
+        }
       }
     }
 
@@ -1068,11 +1115,15 @@
       measureToggle.setAttribute("aria-pressed", measuring ? "true" : "false");
       measurePanel.hidden = !measuring;
       hint.textContent = measuring
-        ? "Đo: bấm hai điểm. Dim có đường gióng và vạch chéo, đẩy ra phía nhìn."
+        ? "Đo: dấu cộng vàng là góc. Bấm để chốt. Chuột phải để xoay, cuộn để phóng."
         : "Kéo để xoay · cuộn để phóng · bấm một cấu kiện";
       renderer.domElement.style.cursor = measuring ? "crosshair" : "";
+      controls.mouseButtons.LEFT = measuring ? -1 : THREE.MOUSE.ROTATE;
+      controls.mouseButtons.RIGHT = measuring ? THREE.MOUSE.ROTATE : THREE.MOUSE.PAN;
       if (!measuring) {
         previewSample = null;
+        snapLocked = false;
+        snapEl.hidden = true;
         hoverGuid = null;
         applyTint();
       }
@@ -1087,10 +1138,6 @@
     document.getElementById("measure-clear").addEventListener("click", clearMeasures);
     renderer.domElement.addEventListener("contextmenu", (event) => {
       event.preventDefault();
-      if (!measuring) return;
-      breakChain = true;
-      panelKey = "";
-      fillMeasurePanel();
     });
 
     let pointerDown = null;
@@ -1104,7 +1151,7 @@
       if (!pointerDown || event.button !== 0) return;
       const moved = Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y);
       pointerDown = null;
-      if (moved > 5) return;
+      if (moved > (measuring ? 12 : 5)) return;
       const hit = raycast(event);
       if (measuring) {
         if (!hit) return;
@@ -1135,10 +1182,12 @@
         if (measuring) {
           const hit = raycast(hoverEvent);
           previewSample = null;
+          snapLocked = false;
           if (hit) {
             const snapped = snapWorldPoint(hit.point, hit.item, hoverEvent.clientX, hoverEvent.clientY);
             previewSample = sampleFromWorld(snapped.point, hit.item);
-            previewMarker.material.color.setHex(snapped.snapped ? 0xe6b15a : 0xd7e7f6);
+            snapLocked = snapped.snapped;
+            previewMarker.material.color.setHex(snapped.snapped ? 0xffc857 : 0xd7e7f6);
           }
           renderer.domElement.style.cursor = "crosshair";
           fillMeasurePanel();
