@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>THHX K1</title>
+  <title>THHX K1 và K2</title>
   <style>
     :root {
       --bg: #071422;
@@ -104,8 +104,8 @@
 </head>
 <body>
   <header>
-    <p class="kicker">THHX · KHỐI K1</p>
-    <h1>Nhà ở</h1>
+    <p class="kicker">THHX · K1 · K2</p>
+    <h1>K1 và K2</h1>
     <p id="status">Đang tải mô hình…</p>
   </header>
   <nav id="views" aria-label="Góc nhìn">
@@ -120,6 +120,8 @@
   </nav>
   <aside id="filters">
     <p class="hint">Gạt để hiện hoặc ẩn</p>
+    <h2>MÔ HÌNH</h2>
+    <div class="chips" id="models"></div>
     <h2>TẦNG</h2>
     <div class="chips" id="storeys"></div>
     <h2>LOẠI</h2>
@@ -150,8 +152,21 @@
     import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
     import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 
-    const STOREY_ORDER = ["MDTN", "TẦNG 1", "TẦNG 2", "TẦNG 3", "TẦNG TUM", "TẦNG MÁI"];
-    const KIND_ORDER = ["Tường", "Cột", "Sàn", "Cửa đi", "Cửa sổ", "Lan can", "Tấm", "Đố", "Bậc thang", "Cầu thang", "Mái", "Vách kính", "Thiết bị"];
+    const STOREY_ORDER = ["ĐÁY ĐÀI", "MẶT ĐÀI", "MDTN", "TẦNG 1", "TẦNG 2", "TẦNG 3", "TẦNG 4", "TẦNG TUM", "TẦNG MÁI"];
+    const KIND_ORDER = ["Tường", "Cột", "Dầm", "Sàn", "Cửa đi", "Cửa sổ", "Lan can", "Tấm", "Đố", "Bậc thang", "Cầu thang", "Mái", "Vách kính", "Thiết bị", "Móng", "Cọc"];
+    const MODEL_ORDER = ["K1-A", "K1-S", "K2-A", "K2-S"];
+    const MODEL_LABEL = {
+      "K1-A": "K1 kiến trúc",
+      "K1-S": "K1 kết cấu",
+      "K2-A": "K2 kiến trúc",
+      "K2-S": "K2 kết cấu",
+    };
+    const MODEL_FILES = [
+      ["K1-A", "K1-A.glb"],
+      ["K1-S", "K1-S.glb"],
+      ["K2-A", "K2-A.glb"],
+      ["K2-S", "K2-S.glb"],
+    ];
     const TINT = {
       base: new THREE.Color(1, 1, 1),
       hot: new THREE.Color(1.55, 1.16, 0.62),
@@ -240,6 +255,7 @@
     const items = [];
     const lookup = new Map();
     const batches = [];
+    const modelOn = new Set();
     const storeyOn = new Set();
     const kindOn = new Set();
     let meta = {};
@@ -334,6 +350,8 @@
       const info = meta[guid] || {};
       rows.replaceChildren();
       detailTitle.textContent = info.classLabel || "Cấu kiện";
+      addRow("Khối", info.block);
+      addRow("Hồ sơ", info.discipline);
       addRow("Tên", info.name);
       addRow("Ký hiệu", info.mark);
       addRow("Tầng", info.storey ? storeyLabel(info.storey) : null);
@@ -354,7 +372,7 @@
 
     function applyTint() {
       for (const item of items) {
-        const next = item.guid === selectedGuid ? "hot" : item.guid === hoverGuid ? "cool" : "base";
+        const next = item.key === selectedGuid ? "hot" : item.key === hoverGuid ? "cool" : "base";
         if (item.tint === next) continue;
         item.tint = next;
         item.batch.setColorAt(item.instanceId, TINT[next]);
@@ -363,10 +381,10 @@
 
     function applyVisibility() {
       for (const item of items) {
-        const info = meta[item.guid] || {};
+        const info = meta[item.key] || {};
         const storey = info.storey || "Khác";
         const kind = info.classLabel || item.kind;
-        item.visible = (!isolatedGuid || item.guid === isolatedGuid) && storeyOn.has(storey) && kindOn.has(kind);
+        item.visible = modelOn.has(item.model) && (!isolatedGuid || item.key === isolatedGuid) && storeyOn.has(storey) && kindOn.has(kind);
         item.batch.setVisibleAt(item.instanceId, item.visible);
       }
     }
@@ -394,6 +412,7 @@
         const shifted = item.worldBox.clone();
         shifted.min.y += item.rank * nextGap;
         shifted.max.y += item.rank * nextGap;
+        if (shifted.max.y < -3) continue;
         box.union(shifted);
         any = true;
       }
@@ -414,13 +433,14 @@
       return null;
     }
 
-    function chips(parent, names, active, labelOf) {
+    function chips(parent, names, active, labelOf, keyOf, initiallyOn) {
       parent.replaceChildren();
       for (const name of names) {
         const button = document.createElement("button");
         button.type = "button";
-        button.className = "chip on";
-        button.setAttribute("aria-pressed", "true");
+        const startsOn = initiallyOn ? initiallyOn(name) : true;
+        button.className = startsOn ? "chip on" : "chip";
+        button.setAttribute("aria-pressed", startsOn ? "true" : "false");
         const knob = document.createElement("span");
         knob.className = "knob";
         knob.setAttribute("aria-hidden", "true");
@@ -428,13 +448,10 @@
         label.textContent = labelOf(name);
         button.append(knob, label);
         const count = document.createElement("em");
-        const ids = new Set(items.filter((item) => {
-          const info = meta[item.guid] || {};
-          return active === storeyOn ? (info.storey || "Khác") === name : (info.classLabel || item.kind) === name;
-        }).map((item) => item.guid));
+        const ids = new Set(items.filter((item) => keyOf(item) === name).map((item) => item.key));
         count.textContent = String(ids.size);
         button.append(count);
-        active.add(name);
+        if (startsOn) active.add(name);
         button.addEventListener("click", () => {
           if (active.has(name)) active.delete(name);
           else active.add(name);
@@ -516,7 +533,9 @@
           const source = mesh.userData.name || mesh.name;
           const parts = source.split(":");
           const guid = parts[1] || "";
-          const info = meta[guid] || {};
+          const modelId = mesh.userData.modelId;
+          const key = modelId + ":" + guid;
+          const info = meta[key] || {};
           const packed = packGeometry(mesh.geometry);
           const geometryId = batch.addGeometry(packed);
           const instanceId = batch.addInstance(geometryId);
@@ -528,6 +547,8 @@
             batch,
             instanceId,
             guid,
+            key,
+            model: modelId,
             kind: info.classLabel || parts[0].replace(/^Ifc/, ""),
             rank: storeyRank(info.storey),
             base: mesh.position.clone(),
@@ -562,9 +583,9 @@
         applyTint();
         return;
       }
-      selectedGuid = item.guid;
+      selectedGuid = item.key;
       hoverGuid = null;
-      showDetail(item.guid);
+      showDetail(item.key);
       applyTint();
     });
     let hoverEvent = null;
@@ -578,7 +599,7 @@
         hoverQueued = false;
         if (!hoverEvent || dragging) return;
         const item = raycast(hoverEvent);
-        const next = item ? item.guid : null;
+        const next = item ? item.key : null;
         if (next === hoverGuid) return;
         hoverGuid = next;
         renderer.domElement.style.cursor = next ? "pointer" : "";
@@ -623,25 +644,35 @@
       }
     });
 
-    const metaPromise = fetch("THHX-K1-meta.json").then((response) => response.json());
-    new GLTFLoader().load("THHX-K1.glb", async (gltf) => {
+    const loader = new GLTFLoader();
+    Promise.all([
+      fetch("THHX-meta.json").then((response) => response.json()),
+      ...MODEL_FILES.map(([id, file]) => new Promise((resolve, reject) => {
+        loader.load(file, (gltf) => resolve([id, gltf]), undefined, reject);
+      })),
+    ]).then(async (results) => {
       try {
-        meta = await metaPromise;
-        gltf.scene.rotation.x = -Math.PI / 2;
-        gltf.scene.updateMatrixWorld(true);
+        meta = results[0];
         const meshes = [];
-        gltf.scene.traverse((node) => {
-          if (node.isMesh) meshes.push(node);
-        });
+        for (const [id, gltf] of results.slice(1)) {
+          gltf.scene.rotation.x = -Math.PI / 2;
+          gltf.scene.updateMatrixWorld(true);
+          gltf.scene.traverse((node) => {
+            if (!node.isMesh) return;
+            node.userData.modelId = id;
+            meshes.push(node);
+          });
+        }
         status.textContent = "Đang ghép mô hình…";
         buildBatches(meshes);
-        const guids = new Set(items.map((item) => item.guid));
-        const storeys = STOREY_ORDER.filter((name) => items.some((item) => (meta[item.guid] || {}).storey === name));
-        const present = new Set(items.map((item) => (meta[item.guid] || {}).classLabel || item.kind));
+        const keys = new Set(items.map((item) => item.key));
+        const storeys = STOREY_ORDER.filter((name) => items.some((item) => (meta[item.key] || {}).storey === name));
+        const present = new Set(items.map((item) => (meta[item.key] || {}).classLabel || item.kind));
         const kinds = KIND_ORDER.filter((name) => present.has(name));
         for (const name of present) if (!kinds.includes(name)) kinds.push(name);
-        chips(document.getElementById("storeys"), storeys, storeyOn, storeyLabel);
-        chips(document.getElementById("kinds"), kinds, kindOn, (name) => name);
+        chips(document.getElementById("models"), MODEL_ORDER, modelOn, (name) => MODEL_LABEL[name], (item) => item.model, (name) => name.endsWith("-A"));
+        chips(document.getElementById("storeys"), storeys, storeyOn, storeyLabel, (item) => (meta[item.key] || {}).storey || "Khác");
+        chips(document.getElementById("kinds"), kinds, kindOn, (name) => name, (item) => (meta[item.key] || {}).classLabel || item.kind);
         applyVisibility();
         home = visibleBox(0);
         const center = home.getCenter(new THREE.Vector3());
@@ -650,13 +681,13 @@
         camera.position.copy(center).add(viewOffset("orbit", home));
         controls.target.copy(center);
         controls.update();
-        status.textContent = guids.size.toLocaleString("vi-VN") + " cấu kiện. Kéo để xoay, bấm để xem chi tiết.";
+        status.textContent = keys.size.toLocaleString("vi-VN") + " cấu kiện trên 2 khối. Gạt mô hình để bật kiến trúc hoặc kết cấu.";
       } catch (error) {
         status.textContent = "Không ghép được mô hình.";
         console.error(error);
       }
-    }, undefined, (error) => {
-      status.textContent = "Không tải được mô hình. Mở qua http://127.0.0.1:8765/";
+    }).catch((error) => {
+      status.textContent = "Không tải được mô hình.";
       console.error(error);
     });
 
